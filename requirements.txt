@@ -1,0 +1,7 @@
+transformers
+torch
+scikit-learn
+numpy
+pandas
+datasets
+POT

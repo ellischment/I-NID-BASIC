@@ -1,0 +1,52 @@
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 1 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 3 instances
+INFO:root:Long-tailed distribution created, total instances: 6
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.1
+INFO:root:Starting model evaluation
+INFO:root:Начало предобучения модели
+INFO:root:Starting pseudo-label generation
+INFO:root:Starting training on pseudo-labeled data
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 1 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 3 instances
+INFO:root:Long-tailed distribution created, total instances: 6
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.1
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 1 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 3 instances
+INFO:root:Long-tailed distribution created, total instances: 6
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.1
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 1 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 3 instances
+INFO:root:Long-tailed distribution created, total instances: 6
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.5
+INFO:root:Split completed: labeled=3, unlabeled=4, test=3
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 1 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 3 instances
+INFO:root:Long-tailed distribution created, total instances: 6
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.5
+INFO:root:Split completed: labeled=3, unlabeled=4, test=3
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 4 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 1 instances
+INFO:root:Long-tailed distribution created, total instances: 7
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.5
+INFO:root:Split completed: labeled=3, unlabeled=4, test=3
+INFO:root:Creating long-tailed distribution with gamma=3 and num_classes=3
+INFO:root:Class 0: sampled 4 instances
+INFO:root:Class 1: sampled 2 instances
+INFO:root:Class 2: sampled 1 instances
+INFO:root:Long-tailed distribution created, total instances: 7
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.5
+INFO:root:Split completed: labeled=3, unlabeled=4, test=3
+INFO:root:Splitting data: known_intent_ratio=0.75, labeled_ratio=0.5
+INFO:root:Split completed: labeled=3, unlabeled=4, test=3

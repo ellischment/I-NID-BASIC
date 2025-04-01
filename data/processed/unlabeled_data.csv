@@ -1,0 +1,11 @@
+text,intent,label_index
+How do I reset my password?,intent1,0
+I want to check my balance,intent2,1
+How can I transfer money?,intent3,2
+What is my account number?,intent1,0
+I need help with my card,intent2,1
+How do I change my email?,intent3,2
+I want to close my account,intent1,0
+How can I open a new account?,intent2,1
+What are the fees for transfers?,intent3,2
+I need help with my loan,intent1,0
