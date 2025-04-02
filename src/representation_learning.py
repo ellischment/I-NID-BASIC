@@ -1,77 +1,111 @@
-from transformers import BertTokenizer, BertModel, AdamW
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-import pandas as pd
+from transformers import BertModel, BertTokenizer, AdamW
 import logging
 import os
+from src.config import Config
 
-# Create logs directory if it doesn't exist
 os.makedirs('logs', exist_ok=True)
-logging.basicConfig(filename='logs/imbanid.log', level=logging.INFO)
+logging.basicConfig(filename='logs/representation_learning.log', level=logging.INFO)
 
 
-def train_model():
-    logging.info("Starting training on pseudo-labeled data")
+class RepresentationLearner:
+    def __init__(self, config):
+        self.config = config
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = BertModel.from_pretrained(config.pretrained_model_path)
+        self.tokenizer = BertTokenizer.from_pretrained(config.tokenizer_name)
+        self.model.to(self.device)
 
-    # Load labeled, unlabeled (with pseudo-labels), and test data
-    labeled_data = pd.read_csv("data/processed/labeled_data.csv")
-    unlabeled_data = pd.read_csv("data/processed/unlabeled_data_with_pseudo_labels.csv")
-    test_data = pd.read_csv("data/processed/test_data.csv")
+    def _prepare_data(self, texts, labels=None):
+        encodings = self.tokenizer(
+            texts,
+            truncation=True,
+            padding='max_length',  # Changed to ensure fixed length
+            max_length=self.config.max_seq_length,
+            return_tensors='pt'
+        )
+        if labels is not None:
+            return TensorDataset(
+                encodings['input_ids'],
+                encodings['attention_mask'],
+                torch.tensor(labels)
+            )
+        return TensorDataset(
+            encodings['input_ids'],
+            encodings['attention_mask']
+        )
 
-    # Combine labeled and pseudo-labeled data for training
-    all_training_data = pd.concat([labeled_data, unlabeled_data])
+    def train(self, labeled_data, pseudo_labeled_data):
+        try:
+            # Combine data
+            all_texts = labeled_data['text'].tolist() + pseudo_labeled_data['text'].tolist()
+            all_labels = labeled_data['label'].tolist() + pseudo_labeled_data['pseudo_label'].tolist()
 
-    # Initialize tokenizer and pre-trained model
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    model = BertModel.from_pretrained("models/pretrained/bert_pretrained")
+            # Prepare datasets
+            train_dataset = self._prepare_data(all_texts, all_labels)
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.config.batch_size,
+                shuffle=True
+            )
 
-    # Tokenize the training data
-    train_encodings = tokenizer(list(all_training_data['text']), truncation=True, padding=True, max_length=128)
-    train_labels = torch.tensor(all_training_data['pseudo_labels'].tolist())
+            # Initialize optimizer and loss
+            optimizer = AdamW(self.model.parameters(), lr=self.config.learning_rate)
+            criterion = nn.CrossEntropyLoss()
 
-    # Create TensorDataset and DataLoader for training
-    train_dataset = TensorDataset(
-        torch.tensor(train_encodings['input_ids']),
-        torch.tensor(train_encodings['attention_mask']),
-        train_labels
-    )
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+            # Training loop
+            self.model.train()
+            for epoch in range(self.config.num_epochs):
+                total_loss = 0
+                for batch in train_loader:
+                    optimizer.zero_grad()
+                    input_ids = batch[0].to(self.device)
+                    attention_mask = batch[1].to(self.device)
+                    labels = batch[2].to(self.device)
 
-    # Initialize optimizer and device (GPU if available, otherwise CPU)
-    optimizer = AdamW(model.parameters(), lr=2e-5)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model.to(device)
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask
+                    )
 
-    # Training loop
-    for epoch in range(3):
-        model.train()
-        total_loss = 0
-        for batch in train_loader:
-            optimizer.zero_grad()
-            input_ids = batch[0].to(device)
-            attention_mask = batch[1].to(device)
-            labels = batch[2].to(device)
+                    # Use CLS token for classification
+                    cls_embeddings = outputs.last_hidden_state[:, 0, :]
+                    loss = criterion(cls_embeddings, labels)
 
-            # Forward pass
-            outputs = model(input_ids, attention_mask=attention_mask)
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
 
-            # Compute loss using the CLS token embeddings
-            loss = torch.nn.CrossEntropyLoss()(outputs.last_hidden_state[:, 0, :], labels)
+                avg_loss = total_loss / len(train_loader)
+                logging.info(f"Epoch {epoch + 1}/{self.config.num_epochs}, Loss: {avg_loss:.4f}")
 
-            # Backward pass and optimization
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+            # Save model
+            os.makedirs(self.config.finetuned_model_path, exist_ok=True)
+            self.model.save_pretrained(self.config.finetuned_model_path)
+            logging.info("Model training completed and saved")
 
-        # Log average loss for the epoch
-        avg_loss = total_loss / len(train_loader)
-        logging.info(f"Epoch {epoch + 1}, Average Loss: {avg_loss}")
+        except Exception as e:
+            logging.error(f"Error during training: {str(e)}")
+            raise
 
-    # Save the fine-tuned model
-    os.makedirs("models/finetuned", exist_ok=True)
-    model.save_pretrained("models/finetuned/bert_finetuned")
-    logging.info("Training completed, model saved")
+    def get_embeddings(self, texts):
+        self.model.eval()
+        dataset = self._prepare_data(texts)
+        loader = DataLoader(dataset, batch_size=self.config.batch_size)
 
+        embeddings = []
+        with torch.no_grad():
+            for batch in loader:
+                input_ids = batch[0].to(self.device)
+                attention_mask = batch[1].to(self.device)
 
-if __name__ == "__main__":
-    train_model()
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+                cls_embeddings = outputs.last_hidden_state[:, 0, :]
+                embeddings.append(cls_embeddings.cpu())
+
+        return torch.cat(embeddings, dim=0)

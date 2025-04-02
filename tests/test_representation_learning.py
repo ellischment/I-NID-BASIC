@@ -1,132 +1,101 @@
+# tests/test_evaluation.py
 import unittest
-import pandas as pd
-import torch
-from transformers import BertTokenizer, BertModel
-from torch.utils.data import DataLoader, TensorDataset
 import os
-import logging
 import tempfile
 import shutil
+import pandas as pd
+import numpy as np
+from unittest.mock import patch, MagicMock
+import torch
 
 
-class TestTrainModel(unittest.TestCase):
-
+class TestEvaluateModel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Создаем временные директории для данных и логов
-        cls.temp_data_dir = tempfile.mkdtemp()
-        cls.temp_logs_dir = tempfile.mkdtemp()
-        cls.temp_models_dir = tempfile.mkdtemp()
+        # Setup temp directories
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.data_dir = os.path.join(cls.temp_dir, "data/processed")
+        cls.model_dir = os.path.join(cls.temp_dir, "models/finetuned")
+        cls.log_dir = os.path.join(cls.temp_dir, "logs")
 
-        # Создаем фиктивные данные для тестирования
-        cls.labeled_data = pd.DataFrame({
-            'text': ['This is a positive sentence', 'This is a negative sentence'],
-            'pseudo_labels': [1, 0]
+        os.makedirs(cls.data_dir, exist_ok=True)
+        os.makedirs(cls.model_dir, exist_ok=True)
+        os.makedirs(cls.log_dir, exist_ok=True)
+
+        # Create test data - 4 samples
+        test_data = pd.DataFrame({
+            'text': ['sample 1', 'sample 2', 'sample 3', 'sample 4'],
+            'label_index': [0, 1, 0, 1]
         })
-        cls.unlabeled_data = pd.DataFrame({
-            'text': ['This is another positive sentence', 'This is another negative sentence'],
-            'pseudo_labels': [1, 0]
-        })
-        cls.test_data = pd.DataFrame({
-            'text': ['This is a test sentence'],
-            'pseudo_labels': [1]
-        })
+        test_data.to_csv(os.path.join(cls.data_dir, "test_data.csv"), index=False)
 
-        # Сохраняем фиктивные данные в файлы
-        os.makedirs(os.path.join(cls.temp_data_dir, "processed"), exist_ok=True)
-        cls.labeled_data.to_csv(os.path.join(cls.temp_data_dir, "processed/labeled_data.csv"), index=False)
-        cls.unlabeled_data.to_csv(os.path.join(cls.temp_data_dir, "processed/unlabeled_data_with_pseudo_labels.csv"), index=False)
-        cls.test_data.to_csv(os.path.join(cls.temp_data_dir, "processed/test_data.csv"), index=False)
+    def setUp(self):
+        # Create mock model
+        self.mock_model = MagicMock()
 
-        # Инициализация логгера
-        os.makedirs(cls.temp_logs_dir, exist_ok=True)
-        logging.basicConfig(filename=os.path.join(cls.temp_logs_dir, "imbanid.log"), level=logging.INFO)
+        # Configure model to return logits for binary classification
+        def mock_forward(*args, **kwargs):
+            mock_output = MagicMock()
+            mock_output.logits = torch.tensor([[1.0, -1.0], [-1.0, 1.0]])  # Alternating predictions
+            return mock_output
 
-    def test_data_loading(self):
-        # Проверка загрузки данных
-        labeled_data = pd.read_csv(os.path.join(self.temp_data_dir, "processed/labeled_data.csv"))
-        unlabeled_data = pd.read_csv(os.path.join(self.temp_data_dir, "processed/unlabeled_data_with_pseudo_labels.csv"))
-        test_data = pd.read_csv(os.path.join(self.temp_data_dir, "processed/test_data.csv"))
+        self.mock_model.forward = mock_forward
+        self.mock_model.eval.return_value = None
 
-        self.assertEqual(len(labeled_data), 2)
-        self.assertEqual(len(unlabeled_data), 2)
-        self.assertEqual(len(test_data), 1)
+        # Mock tokenizer
+        def mock_tokenize(texts, **kwargs):
+            return {
+                'input_ids': torch.ones(len(texts), 128, dtype=torch.long),
+                'attention_mask': torch.ones(len(texts), 128, dtype=torch.long)
+            }
 
-    def test_tokenization(self):
-        # Проверка токенизации
-        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        train_encodings = tokenizer(list(self.labeled_data['text']), truncation=True, padding=True, max_length=128)
+        self.mock_tokenizer = MagicMock(side_effect=mock_tokenize)
 
-        self.assertIn('input_ids', train_encodings)
-        self.assertIn('attention_mask', train_encodings)
-        self.assertEqual(len(train_encodings['input_ids']), 2)
-
-    def test_dataloader_creation(self):
-        # Проверка создания DataLoader
-        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        train_encodings = tokenizer(list(self.labeled_data['text']), truncation=True, padding=True, max_length=128)
-        train_labels = torch.tensor(self.labeled_data['pseudo_labels'].tolist())
-
-        train_dataset = TensorDataset(
-            torch.tensor(train_encodings['input_ids']),
-            torch.tensor(train_encodings['attention_mask']),
-            train_labels
+        # Patch the imports
+        self.model_patch = patch(
+            'src.evaluation.BertForSequenceClassification.from_pretrained',
+            return_value=self.mock_model
         )
-        train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
-
-        self.assertEqual(len(train_loader), 1)  # 2 samples / batch_size=2 = 1 batch
-
-    def test_model_training(self):
-        # Проверка обучения модели
-        model = BertModel.from_pretrained('bert-base-uncased')
-        optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        model.to(device)
-
-        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        train_encodings = tokenizer(list(self.labeled_data['text']), truncation=True, padding=True, max_length=128)
-        train_labels = torch.tensor(self.labeled_data['pseudo_labels'].tolist())
-
-        train_dataset = TensorDataset(
-            torch.tensor(train_encodings['input_ids']),
-            torch.tensor(train_encodings['attention_mask']),
-            train_labels
+        self.tokenizer_patch = patch(
+            'src.evaluation.BertTokenizer.from_pretrained',
+            return_value=self.mock_tokenizer
         )
-        train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
 
-        model.train()
-        total_loss = 0
-        for batch in train_loader:
-            optimizer.zero_grad()
-            input_ids = batch[0].to(device)
-            attention_mask = batch[1].to(device)
-            labels = batch[2].to(device)
+        self.model_mock = self.model_patch.start()
+        self.tokenizer_mock = self.tokenizer_patch.start()
 
-            outputs = model(input_ids, attention_mask=attention_mask)
-            loss = torch.nn.CrossEntropyLoss()(outputs.last_hidden_state[:, 0, :], labels)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+    def test_evaluation_workflow(self):
+        from src.evaluation import evaluate_model
 
-        self.assertGreater(total_loss, 0)  # Проверяем, что loss был вычислен
+        # Test evaluation
+        metrics = evaluate_model(
+            data_path=os.path.join(self.data_dir, "test_data.csv"),
+            model_path=self.model_dir,
+            batch_size=2
+        )
 
-    def test_model_saving(self):
-        # Проверка сохранения модели
-        model = BertModel.from_pretrained('bert-base-uncased')
-        os.makedirs(os.path.join(self.temp_models_dir, "finetuned"), exist_ok=True)
-        model.save_pretrained(os.path.join(self.temp_models_dir, "finetuned/bert_finetuned"))
+        # Verify metrics
+        self.assertIn('accuracy', metrics)
+        self.assertIn('f1', metrics)
+        self.assertIn('nmi', metrics)
+        self.assertIn('ari', metrics)
+        self.assertIsInstance(metrics['accuracy'], float)
 
-        self.assertTrue(os.path.exists(os.path.join(self.temp_models_dir, "finetuned/bert_finetuned")))
+    def test_error_handling(self):
+        from src.evaluation import evaluate_model
+
+        with patch('pandas.read_csv', side_effect=Exception("Test error")):
+            with self.assertRaises(Exception) as context:
+                evaluate_model()
+            self.assertIn("Test error", str(context.exception))
+
+    def tearDown(self):
+        self.model_patch.stop()
+        self.tokenizer_patch.stop()
 
     @classmethod
     def tearDownClass(cls):
-        # Закрываем логгер
-        logging.shutdown()
-
-        # Удаляем временные директории
-        shutil.rmtree(cls.temp_data_dir)
-        shutil.rmtree(cls.temp_logs_dir)
-        shutil.rmtree(cls.temp_models_dir)
+        shutil.rmtree(cls.temp_dir)
 
 
 if __name__ == "__main__":
