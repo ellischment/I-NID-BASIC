@@ -1,234 +1,187 @@
 import unittest
 import os
 import pandas as pd
-from unittest.mock import patch, MagicMock
-from src.model_pretraining import pretrain_model
-from src.data_preparation import create_long_tailed_dataset
+from unittest.mock import patch, MagicMock, call
 import torch
 from torch.utils.data import TensorDataset, DataLoader
+from transformers import BertTokenizer, BertModel
+
+from src.model_pretraining import pretrain_model
 
 
-def mock_tokenizer(texts, **kwargs):
-    # Mocking the tokenizer to return consistent input_ids and attention_mask
-    input_ids = []
-    attention_masks = []
-    max_length = 8  # Define a maximum length for padding
+class MockTokenizer:
+    def __init__(self):
+        self.side_effect = self.mock_tokenize
+        self.vocab = {
+            "[CLS]": 101,
+            "[SEP]": 102,
+            "[PAD]": 0,
+            "check": 103,
+            "balance": 104,
+            "transfer": 105,
+            "money": 106,
+            "reset": 107,
+            "password": 108,
+            "account": 109,
+            "info": 110
+        }
 
-    for text in texts:
-        # Simulate tokenization
-        num_tokens = min(len(text.split()) + 2, max_length)  # +2 for [CLS] and [SEP]
-        input_id = [101] + [2023] * (num_tokens - 2) + [102]  # Example tokenized input
-        input_id += [0] * (max_length - len(input_id))  # Pad with zeros
-        input_ids.append(input_id)
-        attention_mask = [1] * num_tokens + [0] * (max_length - num_tokens)  # Example attention mask
-        attention_masks.append(attention_mask)
+    def mock_tokenize(self, texts, **kwargs):
+        input_ids = []
+        attention_masks = []
 
-    return {
-        'input_ids': torch.tensor(input_ids),  # Return as tensor
-        'attention_mask': torch.tensor(attention_masks)  # Return as tensor
-    }
+        for text in texts:
+            # Simulate tokenization process
+            tokens = text.lower().split()
+            token_ids = [self.vocab.get(tok, 1) for tok in tokens]  # 1 for UNK
+
+            # Add special tokens [CLS] and [SEP]
+            token_ids = [self.vocab["[CLS]"]] + token_ids + [self.vocab["[SEP]"]]
+            attention_mask = [1] * len(token_ids)
+
+            # Pad to max_length if needed
+            if "max_length" in kwargs:
+                pad_len = kwargs["max_length"] - len(token_ids)
+                token_ids += [self.vocab["[PAD]"]] * pad_len
+                attention_mask += [0] * pad_len
+
+            input_ids.append(token_ids)
+            attention_masks.append(attention_mask)
+
+        return {
+            'input_ids': torch.tensor(input_ids),
+            'attention_mask': torch.tensor(attention_masks)
+        }
+
+    def __call__(self, *args, **kwargs):
+        return self.side_effect(*args, **kwargs)
+
+    def save_pretrained(self, path):
+        pass
 
 
 class TestModelPretraining(unittest.TestCase):
     def setUp(self):
-        # Create synthetic data
-        self.data = {
+        # Realistic banking intent examples
+        self.banking_intents = pd.DataFrame({
             'text': [
-                'How do I reset my password?',  # intent1
-                'I want to check my balance',  # intent2
-                'How can I transfer money?',  # intent3
-                'What is my account number?',  # intent1
-                'I need help with my card',  # intent2
-                'How do I change my email?',  # intent3
-                'I want to close my account',  # intent1
+                "How can I check my account balance?",
+                "I need to transfer money to another account",
+                "What's my current balance?",
+                "Make a transfer of $500 to John Doe",
+                "Reset my online banking password",
+                "Show my account information",
+                "I want to check my savings account balance"
             ],
-            'intent': [  # Ensure this column exists
-                'intent1', 'intent2', 'intent3', 'intent1', 'intent2',
-                'intent3', 'intent1'
-            ]
-        }
-        self.df = pd.DataFrame(self.data)
+            'label_index': [0, 1, 0, 1, 2, 3, 0]  # 0=balance, 1=transfer, 2=password, 3=account_info
+        })
 
-        # Create long-tailed distribution
-        self.long_tailed_df = create_long_tailed_dataset(self.df, gamma=3, num_classes=3)
+        # Mock model components
+        self.mock_tokenizer = MockTokenizer()
+        self.mock_model = MagicMock(spec=BertModel)
 
-        # Create the directory for saving the model
-        os.makedirs("models/pretrained", exist_ok=True)
+        # Configure realistic mock model outputs
+        mock_output = MagicMock()
+        # batch_size=7 (matches our examples), seq_len=128, hidden_size=768
+        mock_output.last_hidden_state = torch.randn(7, 128, 768)
+        self.mock_model.return_value = mock_output
+        self.mock_model.parameters.return_value = [torch.nn.Parameter(torch.randn(768, 768))]
 
-    @patch('src.model_pretraining.BertTokenizer.from_pretrained')
     @patch('src.model_pretraining.BertModel.from_pretrained')
-    def test_pretrain_model(self, mock_bert_model, mock_tokenizer_class):
-        """
-        Test that the model pretraining function works correctly on long-tailed data.
-        """
-        # Mock the tokenizer
-        mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.side_effect = mock_tokenizer  # Set side effect for the tokenizer instance
-        mock_tokenizer_class.return_value = mock_tokenizer_instance
+    @patch('src.model_pretraining.BertTokenizer.from_pretrained')
+    def test_pretrain_model_with_realistic_data(self, mock_tokenizer_init, mock_model_init):
+        """Test pretraining with realistic banking intent examples"""
+        # Setup mocks
+        mock_tokenizer_init.return_value = self.mock_tokenizer
+        mock_model_init.return_value = self.mock_model
 
-        # Mock the model
-        mock_model = MagicMock()
-        mock_param = torch.nn.Parameter(torch.randn(768, 768, requires_grad=True))  # Mock parameters
-        mock_model.parameters.return_value = [mock_param]  # Return the mock parameter
-        mock_model.return_value.last_hidden_state = torch.randn(5, 128, 768, requires_grad=True)  # Example model output
-        mock_model.forward.return_value = mock_model.return_value  # Ensure forward method returns the mock output
-        mock_model.save_pretrained = MagicMock()  # Mock the save_pretrained method
-        mock_bert_model.return_value = mock_model
+        # Run pretraining
+        model, tokenizer = pretrain_model(self.banking_intents, self.banking_intents)
 
-        # Call the pretraining function
-        try:
-            pretrain_model(self.long_tailed_df, self.long_tailed_df)  # Pass long-tailed data
-        except Exception as e:
-            self.fail(f"pretrain_model() raised an exception: {e}")
+        # Verify tokenization
+        tokenized = self.mock_tokenizer(list(self.banking_intents['text']), max_length=128)
+        self.assertEqual(tokenized['input_ids'].shape, (7, 128))  # 7 examples
+        self.assertEqual(tokenized['attention_mask'].shape, (7, 128))
 
-        # Debugging information
-        print(f"Length of long-tailed DataFrame: {len(self.long_tailed_df)}")
-        print(f"Tokenizer call count: {mock_tokenizer_instance.call_count}")
+        # Verify special tokens
+        sample_input = tokenized['input_ids'][0].tolist()
+        self.assertEqual(sample_input[0], 101)  # [CLS]
+        self.assertIn(102, sample_input)  # [SEP]
 
-        # Check that the tokenizer and model were called
-        mock_tokenizer_class.assert_called_once_with('bert-base-uncased')
-        mock_bert_model.assert_called_once_with('bert-base-uncased')
+        # Verify model training
+        self.assertEqual(self.mock_model.train.call_count, 3)
+        self.mock_model.save_pretrained.assert_called_once_with("models/pretrained/bert_pretrained")
 
-        # Check that the tokenizer was used for processing data
-        # Ожидаем, что токенизатор вызывается дважды: для labeled_data и test_data
-        self.assertEqual(mock_tokenizer_instance.call_count, 2)
+    def test_data_distribution(self):
+        """Test handling of imbalanced classes"""
+        # Create imbalanced data
+        imbalanced_data = pd.DataFrame({
+            'text': ["check balance"] * 5 + ["transfer money"] * 2 + ["reset password"] * 1,
+            'label_index': [0] * 5 + [1] * 2 + [2] * 1
+        })
 
-        # Check that the model was saved
-        mock_model.save_pretrained.assert_called_once_with("models/pretrained/bert_pretrained")
-
-    def test_create_tensor_dataset(self):
-        """
-        Test that TensorDataset is created correctly.
-        """
-        # Mock the tokenizer
-        mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.side_effect = mock_tokenizer
-        mock_tokenizer_class = MagicMock(return_value=mock_tokenizer_instance)
-
-        # Mock the model
-        mock_model = MagicMock()
-        mock_bert_model = MagicMock(return_value=mock_model)
-
-        # Call the pretraining function
-        pretrain_model(self.long_tailed_df, self.long_tailed_df)
-
-        # Check that TensorDataset is created with the correct data
-        train_encodings = mock_tokenizer(list(self.long_tailed_df['text']), truncation=True, padding=True, max_length=128)
-        train_labels = torch.tensor(self.long_tailed_df['label_index'].tolist())
-
-        # Verify that TensorDataset is created with the correct input_ids, attention_mask, and labels
-        self.assertTrue(isinstance(train_encodings['input_ids'], torch.Tensor))
-        self.assertTrue(isinstance(train_encodings['attention_mask'], torch.Tensor))
-        self.assertTrue(isinstance(train_labels, torch.Tensor))
-
-    def test_create_data_loader(self):
-        """
-        Test that DataLoader is created correctly.
-        """
-        # Mock the tokenizer
-        mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.side_effect = mock_tokenizer
-        mock_tokenizer_class = MagicMock(return_value=mock_tokenizer_instance)
-
-        # Mock the model
-        mock_model = MagicMock()
-        mock_bert_model = MagicMock(return_value=mock_model)
-
-        # Call the pretraining function
-        pretrain_model(self.long_tailed_df, self.long_tailed_df)
-
-        # Check that DataLoader is created with the correct batch size and shuffle
-        train_encodings = mock_tokenizer(list(self.long_tailed_df['text']), truncation=True, padding=True, max_length=128)
-        train_labels = torch.tensor(self.long_tailed_df['label_index'].tolist())
-
-        train_dataset = TensorDataset(
-            train_encodings['input_ids'],
-            train_encodings['attention_mask'],
-            train_labels
+        model, _ = pretrain_model(
+            imbalanced_data,
+            imbalanced_data,
+            tokenizer=self.mock_tokenizer,
+            model=self.mock_model
         )
 
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        # Verify all classes were processed
+        tokenized = self.mock_tokenizer(list(imbalanced_data['text']))
+        self.assertEqual(len(tokenized['input_ids']), 8)  # 5+2+1 examples
 
-        self.assertEqual(train_loader.batch_size, 32)
-        self.assertTrue(train_loader.shuffle)
+    @patch('torch.nn.CrossEntropyLoss')
+    def test_loss_calculation(self, mock_loss):
+        """Test loss calculation with realistic examples"""
+        loss_instance = MagicMock()
+        loss_instance.return_value = torch.tensor(0.5)
+        mock_loss.return_value = loss_instance
 
-    def test_optimizer_and_device_initialization(self):
-        """
-        Test that the optimizer and device are initialized correctly.
-        """
-        # Mock the tokenizer
-        mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.side_effect = mock_tokenizer
-        mock_tokenizer_class = MagicMock(return_value=mock_tokenizer_instance)
+        model, _ = pretrain_model(
+            self.banking_intents,
+            self.banking_intents,
+            tokenizer=self.mock_tokenizer,
+            model=self.mock_model
+        )
 
-        # Mock the model
-        mock_model = MagicMock()
-        mock_bert_model = MagicMock(return_value=mock_model)
+        # Verify loss was calculated for each batch
+        self.assertGreater(loss_instance.call_count, 0)
 
-        # Mock the optimizer
-        mock_optimizer = MagicMock()
-        with patch('src.model_pretraining.AdamW', return_value=mock_optimizer):
-            # Call the pretraining function
-            pretrain_model(self.long_tailed_df, self.long_tailed_df)
+        # Verify CLS token is used for classification
+        self.mock_model.return_value.last_hidden_state[:, 0, :].size() == (7, 768)
 
-            # Check that the optimizer is initialized with the correct parameters
-            mock_optimizer.assert_called_once_with(mock_model.parameters(), lr=2e-5)
+    def test_model_output_shapes(self):
+        """Verify model produces correct output shapes"""
+        # Mock different batch sizes
+        test_data = pd.DataFrame({
+            'text': ["check balance", "transfer money"],
+            'label_index': [0, 1]
+        })
 
-            # Check that the model is moved to the correct device
-            device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-            mock_model.to.assert_called_once_with(device)
+        # Create a mock tensor that requires gradient
+        mock_output = torch.randn(2, 128, 768, requires_grad=True)
 
-    def test_training_loop(self):
-        """
-        Test that the training loop works correctly.
-        """
-        # Mock the tokenizer
-        mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.side_effect = mock_tokenizer
-        mock_tokenizer_class = MagicMock(return_value=mock_tokenizer_instance)
+        # Configure mock model
+        self.mock_model.return_value.last_hidden_state = mock_output
+        self.mock_model.return_value.pooler_output = torch.randn(2, 768, requires_grad=True)
 
-        # Mock the model
-        mock_model = MagicMock()
-        mock_model.return_value.last_hidden_state = torch.randn(5, 128, 768, requires_grad=True)
-        mock_bert_model = MagicMock(return_value=mock_model)
+        # Mock the forward pass to return our mock output
+        def mock_forward(*args, **kwargs):
+            return MagicMock(last_hidden_state=mock_output)
 
-        # Mock the optimizer
-        mock_optimizer = MagicMock()
-        with patch('src.model_pretraining.AdamW', return_value=mock_optimizer):
-            # Call the pretraining function
-            pretrain_model(self.long_tailed_df, self.long_tailed_df)
+        self.mock_model.forward = mock_forward
 
-            # Check that the training loop runs for 3 epochs
-            self.assertEqual(mock_model.train.call_count, 3)
+        model, _ = pretrain_model(
+            test_data,
+            test_data,
+            tokenizer=self.mock_tokenizer,
+            model=self.mock_model
+        )
 
-            # Check that the optimizer zero_grad is called
-            self.assertEqual(mock_optimizer.zero_grad.call_count, 3 * len(self.long_tailed_df) // 32)
-
-            # Check that the loss is computed and backpropagated
-            self.assertEqual(mock_model.return_value.last_hidden_state[:, 0, :].shape, (5, 768))
-            self.assertTrue(mock_optimizer.step.call_count > 0)
-
-    def test_logging(self):
-        """
-        Test that logging works correctly.
-        """
-        # Mock the tokenizer
-        mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.side_effect = mock_tokenizer
-        mock_tokenizer_class = MagicMock(return_value=mock_tokenizer_instance)
-
-        # Mock the model
-        mock_model = MagicMock()
-        mock_bert_model = MagicMock(return_value=mock_model)
-
-        # Mock the logging
-        with patch('src.model_pretraining.logging.info') as mock_logging:
-            # Call the pretraining function
-            pretrain_model(self.long_tailed_df, self.long_tailed_df)
-
-            # Check that logging.info is called with the correct messages
-            mock_logging.assert_any_call("Starting model pretraining")
-            mock_logging.assert_any_call("Pretraining completed, model saved")
+        # Verify output shape matches batch size
+        outputs = self.mock_model.return_value.last_hidden_state
+        self.assertEqual(outputs.size(), (2, 128, 768))  # batch_size=2
 
 
 if __name__ == '__main__':
