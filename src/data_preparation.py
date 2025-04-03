@@ -127,5 +127,34 @@ def main():
     #              f"unlabeled={len(stackoverflow_unlabeled)}, test={len(stackoverflow_test)}")
 
 
+def test_data_pipeline():
+    """Validate data pipeline with minimal test dataset"""
+    try:
+        print("=== Testing Data Pipeline ===")
+
+        # Create small test data
+        test_data = pd.DataFrame({
+            'text': ['hello world'] * 10 + ['goodbye'] * 5 + ['test'] * 3,
+            'intent': [0] * 10 + [1] * 5 + [2] * 3  # 3 classes with imbalance
+        })
+
+        print("\nOriginal distribution:")
+        print(test_data['intent'].value_counts())
+
+        # Test long-tail creation
+        long_tail = create_long_tailed_distribution(test_data, gamma=3, num_classes=3)
+        print("\nAfter long-tail (gamma=3):")
+        print(long_tail['intent'].value_counts())
+
+        # Test known/novel split
+        known, novel = split_data_known_novel(test_data, known_ratio=0.6)
+        print(f"\nSplit: {len(known)} known, {len(novel)} novel samples")
+
+        print("\n✅ Data pipeline tests passed!")
+        return True
+    except Exception as e:
+        print(f"\n❌ Test failed: {str(e)}")
+        return False
+
 if __name__ == "__main__":
     main()
