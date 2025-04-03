@@ -4,11 +4,13 @@ from datasets import load_dataset
 import logging
 import os
 from sklearn.model_selection import train_test_split
+from collections import Counter
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 logging.basicConfig(
     filename=os.path.join(LOGS_DIR, "data_prep.log"),
@@ -18,50 +20,43 @@ logging.basicConfig(
 
 
 def create_long_tailed_distribution(df, gamma, num_classes):
-    """Create long-tailed distribution following the paper's formula"""
-    n_max = df['intent'].value_counts().max()
+    """Create long-tail distribution with real data"""
+    if gamma == 1:  # Balanced case
+        return df
+
+    # Get class counts and sort (descending)
+    class_counts = df['intent'].value_counts().sort_values(ascending=False)
+    n_max = class_counts.max()
+
     sampled_data = []
-
-    for i, intent in enumerate(sorted(df['intent'].unique())):
-        n_k = int(n_max * (gamma ** (-i / (num_classes - 1))))
+    for i, (intent, count) in enumerate(class_counts.items()):
+        n_k = max(1, int(n_max * (gamma ** (-i / (num_classes - 1)))))
         class_data = df[df['intent'] == intent]
-        sampled_data.append(class_data.sample(n=min(n_k, len(class_data)), random_state=42))
+        sampled_data.append(class_data.sample(n=min(n_k, len(class_data)),
+                                              random_state=42))
 
-    return pd.concat(sampled_data)
+    return pd.concat(sampled_data).sample(frac=1, random_state=42)  # Shuffle
 
 
-def split_data_known_novel(df, known_ratio=0.75, labeled_ratio=0.1, min_samples_per_class=1):
-    """
-    Split data into labeled (known), unlabeled (known + novel) and balanced test sets
-    with guaranteed minimum samples.
-
-    Args:
-        df: Input DataFrame with 'text' and 'intent' columns
-        known_ratio: Proportion of intents to treat as known (default: 0.75)
-        labeled_ratio: Proportion of known intents to label (default: 0.1)
-        min_samples_per_class: Minimum samples per test class (default: 1)
-
-    Returns:
-        tuple: (labeled_df, unlabeled_df, test_df)
-    """
-    # Handle empty input
+def split_data_known_novel(df, known_ratio=0.75, labeled_ratio=0.1):
+    """Split data into labeled known, unlabeled known+novel, and balanced test sets"""
     if len(df) == 0:
-        return pd.DataFrame(columns=df.columns), pd.DataFrame(columns=df.columns), pd.DataFrame(columns=df.columns)
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    # Get unique intents
+    # Split known/novel intents
     all_intents = df['intent'].unique()
-    num_known = max(1, int(known_ratio * len(all_intents)))  # At least 1 known intent
+    num_known = max(1, int(known_ratio * len(all_intents)))
     known_intents = np.random.choice(all_intents, size=num_known, replace=False)
 
-    # Split known data
     known_df = df[df['intent'].isin(known_intents)]
     novel_df = df[~df['intent'].isin(known_intents)]
 
-    # Ensure minimum labeled samples
-    min_labeled = max(1, int(len(known_df) * labeled_ratio))
-    labeled_df = known_df.sample(n=min(min_labeled, len(known_df)), random_state=42)
+    # Create labeled subset (small portion of known intents)
+    labeled_df = known_df.groupby('intent').apply(
+        lambda x: x.sample(frac=labeled_ratio, random_state=42)
+    ).reset_index(drop=True)
 
-    # Create unlabeled set (remaining known + all novel)
+    # Unlabeled = remaining known + all novel
     unlabeled_known = known_df[~known_df.index.isin(labeled_df.index)]
     unlabeled_df = pd.concat([unlabeled_known, novel_df])
 
@@ -69,92 +64,126 @@ def split_data_known_novel(df, known_ratio=0.75, labeled_ratio=0.1, min_samples_
     test_samples = []
     for intent in all_intents:
         intent_samples = df[df['intent'] == intent]
-        samples = intent_samples.sample(
-            n=min(min_samples_per_class, len(intent_samples)),
-            random_state=42
-        )
+        samples = intent_samples.sample(n=min(20, len(intent_samples)),  # 20 per class
+                                        random_state=42)
         test_samples.append(samples)
     test_df = pd.concat(test_samples)
 
     return labeled_df, unlabeled_df, test_df
 
-def prepare_dataset(dataset_name, dataset_config, num_classes, gamma_values):
-    try:
-        raw_data = load_dataset(dataset_name, dataset_config)['train']
-        df = pd.DataFrame(raw_data)
 
+def prepare_dataset(dataset_name, dataset_config, num_classes, gamma_values):
+    """Process real datasets with proper validation"""
+    try:
+        logging.info(f"Loading {dataset_name} dataset")
+        dataset = load_dataset(dataset_name, dataset_config)
+        df = pd.DataFrame(dataset['train'])
+
+        # Validate and rename columns
+        if 'intent' not in df.columns:
+            if 'label' in df.columns:
+                df = df.rename(columns={'label': 'intent'})
+            else:
+                raise ValueError(f"Dataset {dataset_name} missing 'intent' column")
+
+        # Process each gamma value
         for gamma in gamma_values:
+            logging.info(f"Processing gamma={gamma}")
             save_path = os.path.join(PROCESSED_DIR, f"{dataset_name}_gamma{gamma}")
             os.makedirs(save_path, exist_ok=True)
 
+            # Create long-tail distribution
             lt_data = create_long_tailed_distribution(df, gamma, num_classes)
+
+            # Split data
             labeled, unlabeled, test = split_data_known_novel(lt_data)
 
-            labeled.to_csv(os.path.join(save_path, "train_labeled.csv"), index=False)
-            unlabeled.to_csv(os.path.join(save_path, "train_unlabeled.csv"), index=False)
-            test.to_csv(os.path.join(save_path, "test.csv"), index=False)
+            # Save with validation
+            for data, name in [(labeled, "train_labeled"),
+                               (unlabeled, "train_unlabeled"),
+                               (test, "test")]:
+                path = os.path.join(save_path, f"{name}.csv")
+                data.to_csv(path, index=False)
+                logging.info(f"Saved {name}: {len(data)} samples")
+
+            # Log class distributions
+            log_distributions(labeled, unlabeled, test, save_path)
 
     except Exception as e:
-        logging.error(f"Error processing {dataset_name}: {str(e)}")
+        logging.error(f"Error processing {dataset_name}: {str(e)}", exc_info=True)
         raise
 
+
+def log_distributions(labeled, unlabeled, test, save_path):
+    """Log detailed class distributions"""
+    with open(os.path.join(save_path, "distributions.log"), 'w') as f:
+        f.write("=== Labeled Data Distribution ===\n")
+        f.write(str(Counter(labeled['intent'])) + "\n\n")
+
+        f.write("=== Unlabeled Data Distribution ===\n")
+        f.write(f"Known: {Counter(unlabeled[unlabeled['intent'].isin(labeled['intent'].unique())]['intent'])}\n")
+        f.write(f"Novel: {Counter(unlabeled[~unlabeled['intent'].isin(labeled['intent'].unique())]['intent'])}\n\n")
+
+        f.write("=== Test Data Distribution ===\n")
+        f.write(str(Counter(test['intent'])) + "\n")
+
+
+def test_data_pipeline():
+    """Comprehensive test with real data samples"""
+    try:
+        print("=== Testing Data Pipeline ===")
+
+        # Test with small real data sample
+        test_data = pd.DataFrame({
+            'text': ['check balance'] * 15 + ['transfer money'] * 10 +
+                    ['open account'] * 8 + ['loan request'] * 5,
+            'intent': [0] * 15 + [1] * 10 + [2] * 8 + [3] * 5
+        })
+
+        print("\nOriginal distribution:")
+        print(test_data['intent'].value_counts())
+
+        # Test long-tail
+        long_tail = create_long_tailed_distribution(test_data, gamma=3, num_classes=4)
+        print("\nAfter long-tail (gamma=3):")
+        print(long_tail['intent'].value_counts())
+
+        # Test split
+        labeled, unlabeled, test = split_data_known_novel(test_data)
+        print(f"\nSplit result:")
+        print(f"Labeled: {len(labeled)} samples, {labeled['intent'].nunique()} classes")
+        print(f"Unlabeled: {len(unlabeled)} samples")
+        print(f"Test: {len(test)} samples, balanced")
+
+        # Verify no data leaks
+        assert set(labeled['intent']).issubset(set(unlabeled['intent'])), "Label leakage!"
+        assert len(set(test['intent']).difference(set(unlabeled['intent']))) == 0, "Test leakage!"
+
+        print("\n✅ All pipeline tests passed!")
+        return True
+    except Exception as e:
+        print(f"\n❌ Test failed: {str(e)}", exc_info=True)
+        return False
+
+
 def main():
-    """Main data preparation pipeline"""
+    """Main pipeline with proper dataset handling"""
+    if not test_data_pipeline():
+        raise ValueError("Data pipeline test failed! Fix before proceeding.")
+
     datasets = [
         ("clinc_oos", "plus", 150, [3, 5, 10]),
         ("banking77", None, 77, [3, 5, 10]),
     ]
 
     for name, config, classes, gammas in datasets:
-        logging.info(f"Starting {name} processing")
-        prepare_dataset(name, config, classes, gammas)
+        try:
+            logging.info(f"\n{'=' * 50}\nProcessing {name}\n{'=' * 50}")
+            prepare_dataset(name, config, classes, gammas)
+        except Exception as e:
+            logging.error(f"Failed to process {name}: {str(e)}", exc_info=True)
+            continue
 
-    # StackOverflow dataset (kept commented as in original)
-    # logging.info("Loading StackOverflow dataset")
-    # stackoverflow_dataset = load_dataset("stackoverflow")
-    # stackoverflow_df = pd.DataFrame(stackoverflow_dataset['train'])
-    # logging.info("Creating long-tailed distribution for StackOverflow")
-    # stackoverflow20_lt = create_long_tailed_distribution(stackoverflow_df, gamma=10, num_classes=20)
-    # logging.info("Splitting StackOverflow data")
-    # stackoverflow_labeled, stackoverflow_unlabeled, stackoverflow_test = split_data_known_novel(stackoverflow20_lt)
-    #
-    # stackoverflow_path = os.path.join(PROCESSED_DIR, "stackoverflow_gamma10")
-    # os.makedirs(stackoverflow_path, exist_ok=True)
-    # stackoverflow_labeled.to_csv(os.path.join(stackoverflow_path, "train_labeled.csv"), index=False)
-    # stackoverflow_unlabeled.to_csv(os.path.join(stackoverflow_path, "train_unlabeled.csv"), index=False)
-    # stackoverflow_test.to_csv(os.path.join(stackoverflow_path, "test.csv"), index=False)
-    # logging.info(f"Processed StackOverflow: labeled={len(stackoverflow_labeled)}, "
-    #              f"unlabeled={len(stackoverflow_unlabeled)}, test={len(stackoverflow_test)}")
-
-
-def test_data_pipeline():
-    """Validate data pipeline with minimal test dataset"""
-    try:
-        print("=== Testing Data Pipeline ===")
-
-        # Create small test data
-        test_data = pd.DataFrame({
-            'text': ['hello world'] * 10 + ['goodbye'] * 5 + ['test'] * 3,
-            'intent': [0] * 10 + [1] * 5 + [2] * 3  # 3 classes with imbalance
-        })
-
-        print("\nOriginal distribution:")
-        print(test_data['intent'].value_counts())
-
-        # Test long-tail creation
-        long_tail = create_long_tailed_distribution(test_data, gamma=3, num_classes=3)
-        print("\nAfter long-tail (gamma=3):")
-        print(long_tail['intent'].value_counts())
-
-        # Test known/novel split
-        known, novel = split_data_known_novel(test_data, known_ratio=0.6)
-        print(f"\nSplit: {len(known)} known, {len(novel)} novel samples")
-
-        print("\n✅ Data pipeline tests passed!")
-        return True
-    except Exception as e:
-        print(f"\n❌ Test failed: {str(e)}")
-        return False
 
 if __name__ == "__main__":
     main()
