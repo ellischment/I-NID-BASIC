@@ -40,55 +40,23 @@ class Pretrainer:
         self.config = config
         self.device = torch.device(config.device)
         self.tokenizer = BertTokenizer.from_pretrained(config.model_name)
+
+        # Load data and get number of unique intents
+        train_df = pd.read_csv("data/processed/clinc_oos_gamma3/train_labeled.csv")
+        num_labels = len(train_df['intent'].unique())
+
         self.model = BertForSequenceClassification.from_pretrained(
             config.model_name,
-            num_labels=len(pd.read_csv("data/processed/clinc_oos_gamma3/train_labeled.csv")['label_index'].unique())
+            num_labels=num_labels
         ).to(self.device)
         self._init_mlm_projection()
 
-    def _mlm_loss(hidden_states: torch.Tensor, mlm_labels: torch.Tensor, vocab_size: int,
-                 model: nn.Module, device: torch.device) -> torch.Tensor:
-        """Compute MLM loss using projection head"""
-        # Create projection layer if not exists
-        if not hasattr(model, 'mlm_projection'):
-            model.mlm_projection = nn.Linear(hidden_states.size(-1), vocab_size).to(device)
-            nn.init.xavier_uniform_(model.mlm_projection.weight)
-
-        logits = model.mlm_projection(hidden_states[mlm_labels != -100])
-        return F.cross_entropy(logits, mlm_labels[mlm_labels != -100].view(-1))
-
-    def _init_mlm_projection(self):
-        """Initialize MLM projection head"""
-        self.mlm_projection = nn.Linear(self.model.config.hidden_size, len(self.tokenizer)).to(self.device)
-        nn.init.xavier_uniform_(self.mlm_projection.weight)
-
-    def _mask_tokens(self, inputs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Prepare masked tokens for MLM"""
-        labels = inputs.clone()
-        probability_matrix = torch.full(labels.shape, self.config.mlm_probability)
-
-        special_tokens_mask = [
-            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
-            for val in labels.tolist()
-        ]
-        special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
-
-        probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
-        masked_indices = torch.bernoulli(probability_matrix).bool()
-        labels[~masked_indices] = -100
-
-        # 80% mask, 10% random, 10% original
-        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
-        inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
-
-        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
-        inputs[indices_random] = random_words[indices_random]
-
-        return inputs, labels
-
     def _prepare_dataset(self, df: pd.DataFrame) -> TensorDataset:
-        """Prepare single dataset with MLM"""
+        """Prepare dataset using correct column name"""
+        # Ensure we have the right column
+        if 'intent' not in df.columns:
+            raise ValueError("DataFrame must contain 'intent' column")
+
         encodings = self.tokenizer(
             df['text'].tolist(),
             truncation=True,
@@ -103,103 +71,8 @@ class Pretrainer:
             input_ids,
             encodings['attention_mask'],
             mlm_labels,
-            torch.tensor(df['label_index'].tolist())
+            torch.tensor(df['intent'].tolist())  # Changed from label_index
         )
-
-    def train(self, labeled_data: pd.DataFrame) -> Tuple[BertForSequenceClassification, BertTokenizer]:
-        """Full training pipeline"""
-        # Prepare datasets
-        train_df = labeled_data.sample(frac=0.9, random_state=42)
-        val_df = labeled_data.drop(train_df.index)
-
-        train_dataset = self._prepare_dataset(train_df)
-        val_dataset = self._prepare_dataset(val_df)
-
-        train_loader = DataLoader(train_dataset, batch_size=self.config.batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=self.config.batch_size)
-
-        # Optimizer setup
-        optimizer = AdamW(
-            list(self.model.parameters()) + list(self.mlm_projection.parameters()),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay
-        )
-
-        # Training loop
-        global_step = 0
-        for epoch in range(self.config.num_epochs):
-            self.model.train()
-            epoch_loss = 0
-
-            for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{self.config.num_epochs}")):
-                # Prepare batch
-                input_ids, attention_mask, mlm_labels, labels_cls = [x.to(self.device) for x in batch]
-
-                # Forward pass
-                outputs = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels_cls,
-                    output_hidden_states=True
-                )
-
-                # Calculate losses
-                loss_ce = outputs.loss
-                last_hidden = outputs.hidden_states[-1]
-                mlm_logits = self.mlm_projection(last_hidden[mlm_labels != -100])
-                loss_mlm = F.cross_entropy(mlm_logits, mlm_labels[mlm_labels != -100].view(-1))
-
-                total_loss = (self.config.ce_weight * loss_ce +
-                              self.config.mlm_weight * loss_mlm)
-
-                # Backward pass
-                total_loss.backward()
-
-                if (step + 1) % self.config.gradient_accumulation_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        list(self.model.parameters()) + list(self.mlm_projection.parameters()),
-                        self.config.max_grad_norm
-                    )
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    global_step += 1
-
-                epoch_loss += total_loss.item()
-
-            # Validation
-            self.model.eval()
-            val_loss = 0
-            with torch.no_grad():
-                for batch in val_loader:
-                    input_ids, attention_mask, mlm_labels, labels_cls = [x.to(self.device) for x in batch]
-
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels_cls,
-                        output_hidden_states=True
-                    )
-
-                    last_hidden = outputs.hidden_states[-1]
-                    mlm_logits = self.mlm_projection(last_hidden[mlm_labels != -100])
-                    loss_mlm = F.cross_entropy(mlm_logits, mlm_labels[mlm_labels != -100].view(-1))
-
-                    val_loss += (self.config.ce_weight * outputs.loss +
-                                 self.config.mlm_weight * loss_mlm).item()
-
-            # Save model
-            os.makedirs(self.config.pretrained_model_path, exist_ok=True)
-            torch.save({
-                'model_state_dict': self.model.state_dict(),
-                'projection_state_dict': self.mlm_projection.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }, os.path.join(self.config.pretrained_model_path, 'checkpoint.pt'))
-
-            self.tokenizer.save_pretrained(self.config.pretrained_model_path)
-            logging.info(
-                f"Epoch {epoch + 1} | Train Loss: {epoch_loss / len(train_loader):.4f} | Val Loss: {val_loss / len(val_loader):.4f}")
-
-        return self.model, self.tokenizer
 
 
 def pretrain_model(
