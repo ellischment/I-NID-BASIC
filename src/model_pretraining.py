@@ -99,8 +99,9 @@ def pretrain_model(
     tokenizer = tokenizer if tokenizer is not None else BertTokenizer.from_pretrained(config.model_name)
     model = model if model is not None else BertForSequenceClassification.from_pretrained(
         config.model_name,
-        num_labels=len(labeled_data['label_index'].unique())
+        num_labels=len(labeled_data['intent'].unique())
     )
+
 
     # Device setup
     device = torch.device(config.device)
