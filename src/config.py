@@ -2,7 +2,15 @@ from dataclasses import dataclass
 import os
 import torch
 from typing import List
+import ipdb  # Interactive debugger
+from IPython.core.debugger import set_trace
 
+# Добавьте этот декоратор для отладки функций
+def debug_break(func):
+    def wrapper(*args, **kwargs):
+        set_trace()  # Автоматическая остановка при вызове
+        return func(*args, **kwargs)
+    return wrapper
 
 @dataclass
 class Config:
@@ -65,6 +73,15 @@ class Config:
         if self.colab:
             self.batch_size = min(self.batch_size, 64)
             self.num_epochs = max(self.num_epochs, 1)
+
+        self.debug_phase = None  # 'data|pretrain|rot|contrastive|eval'
+        self.breakpoints = {
+            'data': True,  # Остановка после загрузки данных
+            'pretrain': True,  # Остановка после претрейна
+            'rot': True,  # Остановка после ROT
+            'contrastive': True,  # Остановка при контрастивном обучении
+            'eval': True  # Остановка после оценки
+        }
 
 
 # Global configuration instance
