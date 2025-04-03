@@ -1,3 +1,12 @@
+import os
+import sys
+from pathlib import Path
+
+# Автоматическая настройка путей
+BASE_DIR = Path(__file__).parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
 import argparse
 import logging
 from datetime import datetime
@@ -8,7 +17,7 @@ from src.pseudo_labeling import PseudoLabelGenerator
 from src.representation_learning import RepresentationLearner
 from src.evaluation import evaluate_model
 import pandas as pd
-import os
+
 
 # Initialize configuration
 cfg = Config()
