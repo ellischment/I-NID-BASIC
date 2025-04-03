@@ -5,117 +5,178 @@ import logging
 import pandas as pd
 import os
 from typing import Optional, Tuple
+from tqdm import tqdm
 
 os.makedirs('logs', exist_ok=True)
-logging.basicConfig(filename='logs/imbanid.log', level=logging.INFO)
+logging.basicConfig(
+    filename='logs/pretrain.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+
+class Pretrainer:
+    def __init__(self, config):
+        self.config = config
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    def _prepare_datasets(self, labeled_data: pd.DataFrame) -> Tuple[DataLoader, DataLoader]:
+        """Prepare training and validation datasets"""
+        # Split data (90% train, 10% val)
+        train_df = labeled_data.sample(frac=0.9, random_state=42)
+        val_df = labeled_data.drop(train_df.index)
+
+        # Initialize tokenizer
+        tokenizer = BertTokenizer.from_pretrained(self.config.model_name)
+
+        # Tokenization function
+        def tokenize(texts):
+            return tokenizer(
+                texts.tolist(),
+                truncation=True,
+                padding='max_length',
+                max_length=self.config.max_seq_length,
+                return_tensors='pt'
+            )
+
+        # Tokenize data
+        train_encodings = tokenize(train_df['text'])
+        val_encodings = tokenize(val_df['text'])
+
+        # Create datasets
+        train_dataset = TensorDataset(
+            train_encodings['input_ids'],
+            train_encodings['attention_mask'],
+            torch.tensor(train_df['label_index'].tolist())
+        )
+        val_dataset = TensorDataset(
+            val_encodings['input_ids'],
+            val_encodings['attention_mask'],
+            torch.tensor(val_df['label_index'].tolist())
+        )
+
+        return train_dataset, val_dataset, tokenizer
+
+    def train(self, labeled_data: pd.DataFrame) -> Tuple[BertModel, BertTokenizer]:
+        """Full pretraining pipeline"""
+        logging.info("Starting pretraining process")
+
+        # Prepare data
+        train_dataset, val_dataset, tokenizer = self._prepare_datasets(labeled_data)
+
+        # Initialize model
+        model = BertModel.from_pretrained(self.config.model_name)
+        model.to(self.device)
+
+        # Create dataloaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False
+        )
+
+        # Training setup
+        optimizer = AdamW(
+            model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
+        criterion = torch.nn.CrossEntropyLoss()
+
+        # Training loop
+        for epoch in range(self.config.num_epochs):
+            model.train()
+            total_loss = 0
+
+            progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{self.config.num_epochs}")
+            for batch in progress_bar:
+                optimizer.zero_grad()
+
+                inputs = {
+                    'input_ids': batch[0].to(self.device),
+                    'attention_mask': batch[1].to(self.device)
+                }
+                labels = batch[2].to(self.device)
+
+                outputs = model(**inputs)
+                cls_embeddings = outputs.last_hidden_state[:, 0, :]
+                loss = criterion(cls_embeddings, labels)
+
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item()
+                progress_bar.set_postfix({'loss': loss.item()})
+
+            # Validation
+            model.eval()
+            val_loss = 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    inputs = {
+                        'input_ids': batch[0].to(self.device),
+                        'attention_mask': batch[1].to(self.device)
+                    }
+                    labels = batch[2].to(self.device)
+
+                    outputs = model(**inputs)
+                    cls_embeddings = outputs.last_hidden_state[:, 0, :]
+                    val_loss += criterion(cls_embeddings, labels).item()
+
+            # Logging
+            avg_train_loss = total_loss / len(train_loader)
+            avg_val_loss = val_loss / len(val_loader)
+            logging.info(
+                f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}"
+            )
+
+        # Save model
+        os.makedirs(self.config.pretrained_model_path, exist_ok=True)
+        model.save_pretrained(self.config.pretrained_model_path)
+        tokenizer.save_pretrained(self.config.pretrained_model_path)
+        logging.info(f"Model saved to {self.config.pretrained_model_path}")
+
+        return model, tokenizer
 
 
 def pretrain_model(
         labeled_data: pd.DataFrame,
         test_data: pd.DataFrame,
+        config,
         tokenizer: Optional[BertTokenizer] = None,
-        model: Optional[BertModel] = None,
-        save_path: str = "models/pretrained/bert_pretrained"
+        model: Optional[BertModel] = None
 ) -> Tuple[BertModel, BertTokenizer]:
     """
-    Pretrain the model using labeled and test data.
+    Pretrain model wrapper for compatibility with existing code
 
     Args:
-        labeled_data: DataFrame with columns 'text' and 'label_index'
-        test_data: DataFrame with columns 'text' and 'label_index'
-        tokenizer: Optional pre-initialized tokenizer
-        model: Optional pre-initialized model
-        save_path: Path to save the pretrained model
+        labeled_data: Training DataFrame with 'text' and 'label_index'
+        test_data: Test DataFrame (unused in pretraining)
+        config: Configuration object
+        tokenizer: Optional pre-loaded tokenizer
+        model: Optional pre-loaded model
 
     Returns:
         Tuple of (model, tokenizer)
     """
-    logging.info("Starting model pretraining")
-
-    # Initialize tokenizer and model if not provided
-    tokenizer = tokenizer if tokenizer is not None else BertTokenizer.from_pretrained('bert-base-uncased')
-    model = model if model is not None else BertModel.from_pretrained('bert-base-uncased')
-
-    # Tokenize data
-    train_encodings = tokenizer(
-        list(labeled_data['text']),
-        truncation=True,
-        padding=True,
-        max_length=128,
-        return_tensors='pt'
-    )
-    train_labels = torch.tensor(labeled_data['label_index'].tolist())
-
-    val_encodings = tokenizer(
-        list(test_data['text']),
-        truncation=True,
-        padding=True,
-        max_length=128,
-        return_tensors='pt'
-    )
-    val_labels = torch.tensor(test_data['label_index'].tolist())
-
-    # Create datasets
-    train_dataset = TensorDataset(
-        train_encodings['input_ids'],
-        train_encodings['attention_mask'],
-        train_labels
-    )
-    val_dataset = TensorDataset(
-        val_encodings['input_ids'],
-        val_encodings['attention_mask'],
-        val_labels
-    )
-
-    # Create dataloaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-
-    # Setup training
-    optimizer = AdamW(model.parameters(), lr=2e-5)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model.to(device)
-    criterion = torch.nn.CrossEntropyLoss()
-
-    # Training loop
-    for epoch in range(3):
-        model.train()
-        total_loss = 0
-
-        for batch in train_loader:
-            optimizer.zero_grad()
-
-            input_ids = batch[0].to(device)
-            attention_mask = batch[1].to(device)
-            labels = batch[2].to(device)
-
-            outputs = model(input_ids, attention_mask=attention_mask)
-
-            # Use CLS token for classification
-            cls_embeddings = outputs.last_hidden_state[:, 0, :]
-            loss = criterion(cls_embeddings, labels)
-
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-        avg_loss = total_loss / len(train_loader)
-        logging.info(f"Epoch {epoch + 1}, Average Loss: {avg_loss}")
-
-    # Save model
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    model.save_pretrained(save_path)
-    tokenizer.save_pretrained(save_path)
-    logging.info(f"Pretraining completed, model saved to {save_path}")
-
-    return model, tokenizer
+    pretrainer = Pretrainer(config)
+    return pretrainer.train(labeled_data)
 
 
 if __name__ == "__main__":
-    # Example usage
-    data = {
-        'text': ['sample text 1', 'sample text 2'],
-        'label_index': [0, 1]
-    }
-    df = pd.DataFrame(data)
-    pretrain_model(df, df)
+    # Test with real data
+    from src.config import Config
+
+    # Load sample data
+    data = pd.read_csv("data/processed/clinc_oos_gamma3/train_labeled.csv")
+
+    # Initialize and run
+    cfg = Config()
+    model, tokenizer = pretrain_model(data, None, cfg)
+
+    print("Pretraining completed successfully!")
