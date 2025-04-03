@@ -1,35 +1,20 @@
-# Пути к данным
-DATA_PATHS = {
-    "clinc": "data/raw/clinc_oos",
-    "banking": "data/raw/banking77",
-    "stackoverflow": "data/raw/stackoverflow",
-    "processed": "data/processed",
-    "models": "models"
-}
+class Config:
+    # Data params
+    known_ratio = 0.75
+    labeled_ratio = 0.1
+    gamma_values = [3, 5, 10]
 
-# Гиперпараметры для создания длиннохвостого датасета
-DATASET_CONFIG = {
-    "gamma": [3, 5, 10],  # Коэффициенты дисбаланса
-    "known_intent_ratio": 0.75,  # Доля известных интентов
-    "labeled_ratio": 0.1  # Доля размеченных данных
-}
+    # Model params
+    batch_size = 512
+    temperature = 0.07
+    rho = 0.7
+    tau_g = 0.9
+    lambda1 = 0.05
+    lambda2 = 2  # 7 for balanced datasets
+    max_seq_length = 128
 
-# Гиперпараметры для модели
-MODEL_CONFIG = {
-    "pretrained_model": "bert-base-uncased",
-    "batch_size": 32,
-    "learning_rate": 2e-5,
-    "num_epochs": 3,
-    "device": "cuda" if torch.cuda.is_available() else "cpu"
-}
-
-# Гиперпараметры для генерации псевдометок
-PSEUDO_LABELING_CONFIG = {
-    "reg": 0.1,  # Регуляризация для Sinkhorn
-    "confidence_threshold": 0.9  # Порог уверенности для псевдометок
-}
-
-# Гиперпараметры для оценки
-EVALUATION_CONFIG = {
-    "metrics": ["accuracy", "f1", "nmi", "ari"]
-}
+    # Training params
+    num_epochs = 3
+    learning_rate = 5e-5
+    weight_decay = 0.01
+    grad_clip = 1.0
