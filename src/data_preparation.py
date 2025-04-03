@@ -78,7 +78,6 @@ def split_data_known_novel(df, known_ratio=0.75, labeled_ratio=0.1, min_samples_
 
     return labeled_df, unlabeled_df, test_df
 
-
 def prepare_dataset(dataset_name, dataset_config, num_classes, gamma_values):
     try:
         raw_data = load_dataset(dataset_name, dataset_config)['train']

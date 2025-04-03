@@ -15,6 +15,9 @@ def debug_break(func):
 @dataclass
 class Config:
     """Configuration class for ImbaNID model"""
+    batch_size: int = 1024 if torch.cuda.get_device_capability()[0] >= 8 else 512
+    mixed_precision: bool = True
+    gradient_accumulation: int = 2
 
     # System settings
     device: str = "cuda" if torch.cuda.is_available() else "cpu"

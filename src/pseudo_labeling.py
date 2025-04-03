@@ -2,6 +2,7 @@ import numpy as np
 import ot
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics.pairwise import cosine_similarity
 from transformers import BertTokenizer, BertModel
 import pandas as pd
 import logging
@@ -38,15 +39,17 @@ class PseudoLabelGenerator:
                 embeddings.append(outputs.last_hidden_state[:, 0, :].cpu().numpy())
         return np.concatenate(embeddings)
 
-    def generate_pseudo_labels(self, embeddings, reg=0.1, confidence_thresh=0.5):
-        a = np.ones(embeddings.shape[0]) / embeddings.shape[0]
-        b = np.ones(embeddings.shape[1]) / embeddings.shape[1]
-        Q = ot.sinkhorn(a, b, -np.log(embeddings + 1e-10), reg=reg)
+    def generate_pseudo_labels(self, embeddings):
+        a = np.ones(embeddings.shape[0]) / embeddings.shape[0]  # Uniform sample distribution
+        b = np.ones(embeddings.shape[1]) / embeddings.shape[1]  # Initial class distribution
 
-        pseudo_labels = np.argmax(Q, axis=1)
-        max_probs = np.max(Q, axis=1)
-        pseudo_labels[max_probs < confidence_thresh] = -1
-        return pseudo_labels
+        # Cost matrix
+        C = 1 - cosine_similarity(embeddings)
+
+        # Решить проблему ROT с Sinkhorn-Knopp
+        Q = self.solve_rot(C, a, b, lambda1=0.05, lambda2=2)
+
+        return np.argmax(Q, axis=1)
 
     def process(self, data_df, output_path=None):
         embeddings = self.get_embeddings(data_df['text'].tolist())

@@ -12,11 +12,15 @@ from src.model_pretraining import pretrain_model
 from src.pseudo_labeling import PseudoLabelGenerator
 from src.representation_learning import RepresentationLearner
 from src.evaluation import evaluate_model
+import torch
 
 # Automatic path configuration
 BASE_DIR = Path(__file__).parent
 if str(BASE_DIR) not in sys.path:
     sys.path.append(str(BASE_DIR))
+
+torch.backends.cuda.matmul.allow_tf32 = True  # TF32 for A100
+torch.backends.cudnn.allow_tf32 = True
 
 # Initialize configuration with hyperparameters
 cfg = Config()
