@@ -86,6 +86,7 @@ class RepresentationLearner:
             self.model.save_pretrained(self.config.finetuned_model_path)
             logging.info("Model training completed and saved")
 
+
         except Exception as e:
             logging.error(f"Error during training: {str(e)}")
             raise

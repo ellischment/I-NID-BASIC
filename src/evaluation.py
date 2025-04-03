@@ -11,8 +11,12 @@ import os
 os.makedirs('logs', exist_ok=True)
 logging.basicConfig(filename='logs/imbanid.log', level=logging.INFO)
 
+def evaluate_model(model=None, test_data=None):
+    if model is None:
+        model = BertModel.from_pretrained("models/finetuned/bert_finetuned")
+    if test_data is None:
+        test_data = pd.read_csv("data/processed/test.csv")
 
-def evaluate_model():
     logging.info("Starting model evaluation")
 
     # Load test data

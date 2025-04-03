@@ -48,12 +48,12 @@ class PseudoLabelGenerator:
         pseudo_labels[max_probs < confidence_thresh] = -1
         return pseudo_labels
 
-    def process(self, input_path, output_path):
-        data = self.load_data(input_path)
-        embeddings = self.get_embeddings(data['text'].tolist())
-        data['pseudo_labels'] = self.generate_pseudo_labels(embeddings)
-        data.to_csv(output_path, index=False)
-        return data
+    def process(self, data_df, output_path=None):
+        embeddings = self.get_embeddings(data_df['text'].tolist())
+        data_df['pseudo_labels'] = self.generate_pseudo_labels(embeddings)
+        if output_path:
+            data_df.to_csv(output_path, index=False)
+        return data_df
 
 def main():
     plg = PseudoLabelGenerator()
