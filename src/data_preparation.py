@@ -127,9 +127,9 @@ def log_distributions(labeled, unlabeled, test, save_path):
         f.write("=== Test Data Distribution ===\n")
         f.write(str(Counter(test['intent'])) + "\n")
 
-"""
+
 def test_data_pipeline():
-    #Comprehensive test with real data samples
+    """Comprehensive test with real data samples"""
     try:
         print("=== Testing Data Pipeline ===")
 
@@ -164,12 +164,12 @@ def test_data_pipeline():
     except Exception as e:
         print(f"\n❌ Test failed: {str(e)}", exc_info=True)
         return False
-"""
+
 
 def main():
     """Main pipeline with proper dataset handling"""
-    #if not test_data_pipeline():
-        #raise ValueError("Data pipeline test failed! Fix before proceeding.")
+    if not test_data_pipeline():
+        raise ValueError("Data pipeline test failed! Fix before proceeding.")
 
     datasets = [
         ("clinc_oos", "plus", 150, [3, 5, 10]),
