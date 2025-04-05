@@ -29,7 +29,7 @@ class Config:
     # Data Configuration
     dataset_name: str = "clinc_oos"  # or "banking77"
     dataset_variant: str = "plus"  # "plus" or "imbalanced"
-    num_classes: int = 150  # 150 for CLINC-OOS, 77 for Banking77
+    num_classes: int = None  # 150 for CLINC-OOS, 77 for Banking77(runs in auto mode)
     known_ratio: float = 0.75
     labeled_ratio: float = 0.1
     gamma_values: List[int] = field(default_factory=lambda: [3, 5, 10])
