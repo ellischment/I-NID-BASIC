@@ -5,7 +5,7 @@ from typing import List, Dict, Optional, Tuple
 import ipdb
 from IPython.core.debugger import set_trace
 import logging
-
+import pandas as pd
 
 # Debug decorator
 def debug_break(func):
@@ -98,8 +98,17 @@ class Config:
     def log_dir(self) -> str:
         return os.path.join("logs", f"{self.dataset_name}_{self.model_name}")
 
+
     def __post_init__(self):
         """Extended validation and setup"""
+
+        if self.num_classes is None:
+            try:
+                train_df = pd.read_csv(os.path.join(self.data_processed_path, "train_labeled.csv"))
+                self.num_classes = len(train_df['intent'].unique())
+            except:
+                self.num_classes = 150  # Fallback value
+
         # Data validation
         assert 0 < self.known_ratio <= 1, "known_ratio must be in (0, 1]"
         assert 0 < self.labeled_ratio <= 1, "labeled_ratio must be in (0, 1]"
