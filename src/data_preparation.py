@@ -95,6 +95,7 @@ def prepare_dataset(dataset_name, dataset_config, num_classes, gamma_values):
 
             le = LabelEncoder()
             df['intent'] = le.fit_transform(df['intent'])
+            num_classes = len(le.classes_)
 
             # Create long-tail distribution
             lt_data = create_long_tailed_distribution(df, gamma, num_classes)
@@ -112,6 +113,8 @@ def prepare_dataset(dataset_name, dataset_config, num_classes, gamma_values):
 
             # Log class distributions
             log_distributions(labeled, unlabeled, test, save_path)
+        import joblib
+        joblib.dump(le, os.path.join(save_path, 'label_encoder.pkl'))
 
     except Exception as e:
         logging.error(f"Error processing {dataset_name}: {str(e)}", exc_info=True)

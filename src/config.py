@@ -139,6 +139,10 @@ class Config:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
 
+    @property
+    def label_encoder_path(self):
+        return os.path.join(self.data_processed_path, "label_encoder.pkl")
+
     def update(self, params: Dict):
         """Safely update configuration parameters"""
         for key, value in params.items():

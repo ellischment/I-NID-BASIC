@@ -10,7 +10,7 @@ import pandas as pd
 import logging
 from typing import Optional, Tuple, Dict
 from src.config import Config
-
+import joblib
 
 # Setup logging
 os.makedirs('logs', exist_ok=True)
@@ -118,6 +118,16 @@ def pretrain_model(
         config: PretrainConfig
 ) -> Tuple[BertForSequenceClassification, BertTokenizer]:
     """Pretrains model with both MLM and CE losses as per paper Sec 3.3"""
+
+    le = joblib.load(config.label_encoder_path)
+    config.num_classes = len(le.classes_)
+
+    # Инициализация модели с правильным num_classes
+    model = BertForSequenceClassification.from_pretrained(
+        config.model_name,
+        num_labels=config.num_classes,
+        problem_type="single_label_classification"
+    )
 
     # Initialize tokenizer and models
     tokenizer = BertTokenizer.from_pretrained(config.model_name)
