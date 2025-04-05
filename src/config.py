@@ -18,7 +18,7 @@ def debug_break(func):
 
 @dataclass
 class Config:
-    """Enhanced configuration class for ImbaNID model"""
+    """Enhanced configuration class for ImbaNID model with all paper parameters"""
 
     # System Configuration
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -33,8 +33,8 @@ class Config:
     known_ratio: float = 0.75
     labeled_ratio: float = 0.1
     gamma_values: List[int] = field(default_factory=lambda: [3, 5, 10])
-    text_column: str = "text"  # Column name for text data
-    label_column: str = "intent"  # Column name for labels
+    text_column: str = "text"
+    label_column: str = "intent"
 
     # Model Architecture
     model_name: str = "bert-base-uncased"
@@ -52,13 +52,15 @@ class Config:
     warmup_ratio: float = 0.1
     patience: int = 3  # Early stopping patience
 
-    # Loss Weights
-    temperature: float = 0.07
-    rho: float = 0.7  # Pseudo-label confidence threshold
-    tau_g: float = 0.9  # Similarity threshold
-    lambda1: float = 0.05  # Weight for contrastive loss
-    lambda2: float = 2.0  # 7 for balanced datasets
-    omega: float = 0.5  # Weight for ROT loss
+    # Loss Weights (from paper)
+    temperature: float = 0.07  # τ in paper
+    rho: float = 0.7  # Threshold for noise regularization
+    tau_g: float = 0.9  # Confidence threshold for pseudo-labels
+    lambda1: float = 0.05  # Weight for transport cost (λ1 in paper)
+    lambda2: float = 2.0  # 7 for balanced datasets (λ2 in paper)
+    omega: float = 0.5  # Weight for ROT loss (ω in Eq.12)
+    mlm_probability: float = 0.15  # For MLM pre-training
+    moving_avg_param: float = 0.9  # For pseudo-label updates
 
     # Experimental Features
     use_amp: bool = True  # Automatic Mixed Precision

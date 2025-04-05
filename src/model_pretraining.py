@@ -1,43 +1,52 @@
+from dataclasses import dataclass
+import os
 import torch
 import torch.nn as nn
-from transformers import BertForSequenceClassification, BertTokenizer, AdamW
-from torch.utils.data import Dataset, DataLoader
-from dataclasses import dataclass
+import torch.nn.functional as F
+from transformers import BertForSequenceClassification, BertTokenizer, BertForMaskedLM, AdamW
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from tqdm import tqdm
+import pandas as pd
 import logging
-import os
-from typing import Optional
+from typing import Optional, Tuple, Dict
+from src.config import Config
+
+# Setup logging
+os.makedirs('logs', exist_ok=True)
+logging.basicConfig(
+    filename='logs/pretrain.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 
 @dataclass
 class PretrainConfig:
-    """Configuration for model pretraining stage"""
+    """Configuration for model pretraining with MLM and CE losses"""
     model_name: str = 'bert-base-uncased'
-    batch_size: int = 32  # Reduced from paper's 512 for Colab
+    batch_size: int = 32
     learning_rate: float = 5e-5
-    num_epochs: int = 3  # Reduced from paper's 10
-    max_seq_length: int = 64  # Reduced from 128
+    num_epochs: int = 3
+    max_seq_length: int = 128
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     weight_decay: float = 0.01
     pretrained_model_path: str = 'models/pretrained'
-
-    # ImbaNID specific additions
-    projection_dim: int = 256  # For contrastive learning
-    temperature: float = 0.07
-    lambda1: float = 0.05  # ROT loss weights
-    lambda2: float = 2.0
-    omega: float = 0.5  # Contrastive loss weight
+    text_column: str = 'text'
+    label_column: str = 'intent'
+    mlm_probability: float = 0.15
+    gradient_accumulation_steps: int = 1
+    max_grad_norm: float = 1.0
 
 
 class IntentDataset(Dataset):
-    """Dataset for intent classification with MLM support"""
+    """Dataset for intent classification with MLM capability"""
 
-    def __init__(self, df, tokenizer, config):
+    def __init__(self, df: pd.DataFrame, tokenizer: BertTokenizer, config: PretrainConfig):
         self.texts = df[config.text_column].values
         self.labels = df[config.label_column].values if config.label_column in df.columns else None
         self.tokenizer = tokenizer
         self.max_length = config.max_seq_length
-        self.mlm_probability = 0.15  # For MLM pretraining
+        self.mlm_probability = config.mlm_probability
 
     def __len__(self):
         return len(self.texts)
@@ -60,111 +69,141 @@ class IntentDataset(Dataset):
         if self.labels is not None:
             item['labels'] = torch.tensor(self.labels[idx], dtype=torch.long)
 
-        # Add MLM masking for pretraining
-        input_ids = item['input_ids'].clone()
-        probability_matrix = torch.full(input_ids.shape, self.mlm_probability)
-        special_tokens_mask = self.tokenizer.get_special_tokens_mask(input_ids.tolist(),
-                                                                     already_has_special_tokens=True)
-        probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
-        masked_indices = torch.bernoulli(probability_matrix).bool()
-
-        # 80% mask, 10% random, 10% original
-        indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
-        input_ids[indices_replaced] = self.tokenizer.mask_token_id
-
-        indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
-        input_ids[indices_random] = random_words[indices_random]
-
-        item['masked_input_ids'] = input_ids
-        item['masked_labels'] = item['input_ids'].clone()
-        item['masked_labels'][~masked_indices] = -100  # Only compute loss on masked tokens
-
         return item
 
 
-def pretrain_model(labeled_data, unlabeled_data, config):
-    """Enhanced pretraining with MLM and intent classification"""
-    # Validate input
-    required_columns = {config.text_column}
-    if config.label_column:
-        required_columns.add(config.label_column)
+def mask_tokens(inputs: torch.Tensor, tokenizer: BertTokenizer, mlm_probability: float = 0.15) -> Tuple[
+    torch.Tensor, torch.Tensor]:
+    """Prepare masked tokens for MLM training (Sec 3.3 in paper)"""
+    labels = inputs.clone()
+    probability_matrix = torch.full(labels.shape, mlm_probability)
 
-    missing = required_columns - set(labeled_data.columns)
-    if missing:
-        raise ValueError(f"Missing columns in labeled data: {missing}")
+    # Get special tokens mask
+    special_tokens_mask = [
+        tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
+        for val in labels.tolist()
+    ]
+    special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
 
-    # Initialize model with projection head
+    # Apply masking
+    probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
+    masked_indices = torch.bernoulli(probability_matrix).bool()
+    labels[~masked_indices] = -100  # Ignore non-masked tokens
+
+    # 80% mask, 10% random, 10% original (as in BERT)
+    indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
+    inputs[indices_replaced] = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
+
+    indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+    random_words = torch.randint(len(tokenizer), labels.shape, dtype=torch.long)
+    inputs[indices_random] = random_words[indices_random]
+
+    return inputs, labels
+
+
+def pretrain_model(
+        labeled_data: pd.DataFrame,
+        test_data: pd.DataFrame,
+        config: PretrainConfig
+) -> Tuple[BertForSequenceClassification, BertTokenizer]:
+    """Pretrains model with both MLM and CE losses as per paper Sec 3.3"""
+
+    # Initialize tokenizer and models
+    tokenizer = BertTokenizer.from_pretrained(config.model_name)
+    num_labels = len(labeled_data[config.label_column].unique())
+
+    # Initialize model with both MLM and classification heads
     model = BertForSequenceClassification.from_pretrained(
         config.model_name,
-        num_labels=len(labeled_data[config.label_column].unique())
+        num_labels=num_labels
     ).to(config.device)
 
-    # Add projection head for contrastive learning
-    model.projection = nn.Linear(768, config.projection_dim).to(config.device)
-    tokenizer = BertTokenizer.from_pretrained(config.model_name)
+    mlm_model = BertForMaskedLM.from_pretrained(config.model_name).to(config.device)
 
     # Create datasets
-    labeled_dataset = IntentDataset(labeled_data, tokenizer, config)
-    unlabeled_dataset = IntentDataset(unlabeled_data.drop(columns=[config.label_column], errors='ignore'), tokenizer,
-                                      config)
+    train_dataset = IntentDataset(labeled_data, tokenizer, config)
+    val_dataset = IntentDataset(test_data, tokenizer, config)
 
-    # Combined dataloader
-    combined_dataset = torch.utils.data.ConcatDataset([labeled_dataset, unlabeled_dataset])
-    train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch_size)
 
-    # Optimizer
-    optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    # Initialize optimizer
+    optimizer = AdamW(
+        list(model.parameters()) + list(mlm_model.parameters()),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay
+    )
 
     # Training loop
+    best_val_loss = float('inf')
     for epoch in range(config.num_epochs):
         model.train()
+        mlm_model.train()
         epoch_loss = 0
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.num_epochs}"):
-            # Move batch to device
-            batch = {k: v.to(config.device) for k, v in batch.items()}
+            # CE loss for labeled data
+            inputs = {
+                'input_ids': batch['input_ids'].to(config.device),
+                'attention_mask': batch['attention_mask'].to(config.device),
+                'labels': batch['labels'].to(config.device)
+            }
+            outputs = model(**inputs)
+            ce_loss = outputs.loss
 
-            # Supervised loss (labeled data)
-            if 'labels' in batch:
-                outputs = model(
-                    input_ids=batch['input_ids'],
-                    attention_mask=batch['attention_mask'],
-                    labels=batch['labels']
-                )
-                cls_loss = outputs.loss
-            else:
-                cls_loss = 0
-
-            # MLM loss (all data)
-            mlm_outputs = model(
-                input_ids=batch['masked_input_ids'],
-                attention_mask=batch['attention_mask'],
-                labels=batch['masked_labels']
+            # MLM loss for all data
+            mlm_inputs, mlm_labels = mask_tokens(
+                batch['input_ids'],
+                tokenizer,
+                config.mlm_probability
+            )
+            mlm_outputs = mlm_model(
+                mlm_inputs.to(config.device),
+                attention_mask=batch['attention_mask'].to(config.device),
+                labels=mlm_labels.to(config.device)
             )
             mlm_loss = mlm_outputs.loss
 
-            # Contrastive loss preparation
-            with torch.no_grad():
-                embeddings = model.bert(
-                    batch['input_ids'],
-                    attention_mask=batch['attention_mask']
-                ).last_hidden_state[:, 0, :]
-                projected = model.projection(embeddings)
+            # Combined loss
+            total_loss = ce_loss + mlm_loss
 
-            # Total loss
-            loss = cls_loss + mlm_loss
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+            # Backward pass
+            total_loss.backward()
 
-            epoch_loss += loss.item()
+            # Gradient accumulation
+            if (epoch + 1) % config.gradient_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(mlm_model.parameters(), config.max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad()
 
-        logging.info(f"Epoch {epoch + 1} - Loss: {epoch_loss / len(train_loader):.4f}")
+            epoch_loss += total_loss.item()
 
-    # Save model
-    os.makedirs(config.pretrained_model_path, exist_ok=True)
-    model.save_pretrained(config.pretrained_model_path)
-    tokenizer.save_pretrained(config.pretrained_model_path)
+        # Validation
+        model.eval()
+        mlm_model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                inputs = {
+                    'input_ids': batch['input_ids'].to(config.device),
+                    'attention_mask': batch['attention_mask'].to(config.device),
+                    'labels': batch['labels'].to(config.device)
+                }
+                outputs = model(**inputs)
+                val_loss += outputs.loss.item()
+
+        # Log metrics
+        avg_train_loss = epoch_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        logging.info(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+        # Save best model
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            os.makedirs(config.pretrained_model_path, exist_ok=True)
+            model.save_pretrained(config.pretrained_model_path)
+            tokenizer.save_pretrained(config.pretrained_model_path)
+            logging.info(f"Saved best model with val loss: {best_val_loss:.4f}")
 
     return model, tokenizer

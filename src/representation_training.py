@@ -8,12 +8,16 @@ import logging
 import os
 from tqdm import tqdm
 import numpy as np
+from typing import Dict, List
+from src.config import Config
 
 os.makedirs('logs', exist_ok=True)
 logging.basicConfig(filename='logs/representation_learning.log', level=logging.INFO)
 
 
 class RepresentationLearner:
+    """Implements robust representation learning with noise regularization and contrastive losses"""
+
     def __init__(self, model, tokenizer, config):
         """
         Initialize the representation learner with model, tokenizer and configuration
@@ -57,7 +61,7 @@ class RepresentationLearner:
 
     def class_contrastive_loss(self, features, labels, temperature=0.07):
         """
-        Compute class-wise contrastive loss with adaptive weights
+        Compute class-wise contrastive loss with adaptive weights (Eq.10 in paper)
 
         Args:
             features: Input embeddings [batch_size, hidden_dim]
@@ -88,7 +92,7 @@ class RepresentationLearner:
 
     def noise_regularization(self, features, pseudo_labels, confidences):
         """
-        Apply distribution-aware and quality-aware noise regularization
+        Apply distribution-aware and quality-aware noise regularization (Sec 3.5)
 
         Args:
             features: Input embeddings
@@ -98,20 +102,20 @@ class RepresentationLearner:
         Returns:
             Tuple of (clean_features, clean_labels)
         """
-        # Distribution-aware regularization
+        # Distribution-aware regularization (Eq.6-7)
         class_counts = torch.bincount(pseudo_labels)
         class_probs = class_counts.float() / class_counts.sum()
 
-        # Quality-aware regularization
+        # Quality-aware regularization (Eq.8)
         high_conf_mask = confidences > self.config.tau_g
 
-        # Combine both criteria
+        # Combine both criteria (Eq.9)
         clean_mask = high_conf_mask
         return features[clean_mask], pseudo_labels[clean_mask]
 
     def train_step(self, batch, optimizer):
         """
-        Perform a single training step
+        Perform a single training step with all losses (Eq.12 in paper)
 
         Args:
             batch: Input batch containing (input_ids, attention_mask, labels)
@@ -142,7 +146,7 @@ class RepresentationLearner:
         loss_iwcl = self.contrastive_loss(embeddings, embeddings)  # Instance-wise
         loss_cwcl = self.class_contrastive_loss(embeddings, labels)  # Class-wise
 
-        # Combined loss
+        # Combined loss (Eq.12)
         loss = self.config.omega * (loss_iwcl + loss_cwcl) + (1 - self.config.omega) * F.cross_entropy(embeddings,
                                                                                                        labels)
 
@@ -159,7 +163,7 @@ class RepresentationLearner:
 
     def train(self, labeled_data, unlabeled_data, num_epochs=10):
         """
-        Full training loop
+        Full training loop with both labeled and pseudo-labeled data
 
         Args:
             labeled_data: DataFrame with labeled examples
