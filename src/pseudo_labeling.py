@@ -14,11 +14,34 @@ logging.basicConfig(filename='logs/pseudo_labeling.log', level=logging.INFO)
 
 class PseudoLabelGenerator:
     def __init__(self, model, tokenizer, lambda1=0.05, lambda2=2):
-        self.model = model
+        # Изменяем тип модели для получения эмбеддингов
+        self.encoder = model.bert if hasattr(model, 'bert') else model.base_model
         self.tokenizer = tokenizer
-        self.lambda1 = lambda1  # Entropy regularization weight
-        self.lambda2 = lambda2  # KL divergence weight
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.encoder.to(self.device)
+
+    def get_embeddings(self, texts, batch_size=32):
+        """Get BERT embeddings for texts"""
+        self.encoder.eval()
+        embeddings = []
+
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            inputs = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt"
+            ).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.encoder(**inputs)
+                embeddings.append(outputs.last_hidden_state[:, 0, :].cpu().numpy())
+
+        return np.concatenate(embeddings)
 
     def solve_rot(self, C, a, b, max_iter=1000, tol=1e-6):
         """
@@ -82,28 +105,6 @@ class PseudoLabelGenerator:
         if output_path:
             data_df.to_csv(output_path, index=False)
         return data_df
-
-    def get_embeddings(self, texts, batch_size=32):
-        """Get BERT embeddings for texts"""
-        self.model.eval()
-        embeddings = []
-
-        # Process in batches
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            inputs = self.tokenizer(
-                batch_texts,
-                padding=True,
-                truncation=True,
-                max_length=128,
-                return_tensors="pt"
-            ).to(self.device)
-
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                embeddings.append(outputs.last_hidden_state[:, 0, :].cpu().numpy())
-
-        return np.concatenate(embeddings)
 
     def estimate_num_classes(self, embeddings, max_k=50):
         """Simple method to estimate number of classes (replace with better method)"""
