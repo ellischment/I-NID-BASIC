@@ -1,0 +1,22 @@
+2025-04-04 01:32:54,576 - INFO - 
+==================================================
+Processing clinc_oos
+==================================================
+2025-04-04 01:32:54,576 - INFO - Loading clinc_oos dataset
+2025-04-04 01:33:18,160 - INFO - Processing gamma=3
+2025-04-04 01:33:18,675 - INFO - Saved train_labeled: 1124 samples
+2025-04-04 01:33:18,714 - INFO - Saved train_unlabeled: 14276 samples
+2025-04-04 01:33:18,725 - INFO - Saved test: 3020 samples
+2025-04-04 01:33:18,733 - INFO - Processing gamma=5
+2025-04-04 01:33:19,146 - INFO - Saved train_labeled: 982 samples
+2025-04-04 01:33:19,182 - INFO - Saved train_unlabeled: 12852 samples
+2025-04-04 01:33:19,207 - INFO - Saved test: 3020 samples
+2025-04-04 01:33:19,215 - INFO - Processing gamma=10
+2025-04-04 01:33:19,624 - INFO - Saved train_labeled: 816 samples
+2025-04-04 01:33:19,652 - INFO - Saved train_unlabeled: 10261 samples
+2025-04-04 01:33:19,665 - INFO - Saved test: 3020 samples
+2025-04-04 01:33:19,679 - INFO - 
+==================================================
+Processing banking77
+==================================================
+2025-04-04 01:33:19,679 - INFO - Loading banking77 dataset

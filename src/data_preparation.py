@@ -5,6 +5,7 @@ import logging
 import os
 from sklearn.model_selection import train_test_split
 from collections import Counter
+from sklearn.preprocessing import LabelEncoder
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
@@ -91,6 +92,9 @@ def prepare_dataset(dataset_name, dataset_config, num_classes, gamma_values):
             logging.info(f"Processing gamma={gamma}")
             save_path = os.path.join(PROCESSED_DIR, f"{dataset_name}_gamma{gamma}")
             os.makedirs(save_path, exist_ok=True)
+
+            le = LabelEncoder()
+            df['intent'] = le.fit_transform(df['intent'])
 
             # Create long-tail distribution
             lt_data = create_long_tailed_distribution(df, gamma, num_classes)

@@ -11,6 +11,7 @@ import logging
 from typing import Optional, Tuple, Dict
 from src.config import Config
 
+
 # Setup logging
 os.makedirs('logs', exist_ok=True)
 logging.basicConfig(
@@ -48,6 +49,16 @@ class IntentDataset(Dataset):
         self.max_length = config.max_seq_length
         self.mlm_probability = config.mlm_probability
 
+        assert self.labels.min() >= 0, "You have labels < 0 "
+        assert self.labels.max() < config.num_classes, "labels.max() < config.num_classes"
+
+        self.encodings = tokenizer(
+            list(self.texts),
+            max_length=config.max_seq_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        )
     def __len__(self):
         return len(self.texts)
 
@@ -110,7 +121,7 @@ def pretrain_model(
 
     # Initialize tokenizer and models
     tokenizer = BertTokenizer.from_pretrained(config.model_name)
-    num_labels = len(labeled_data[config.label_column].unique())
+    num_labels = config.num_classes
 
     # Initialize model with both MLM and classification heads
     model = BertForSequenceClassification.from_pretrained(
