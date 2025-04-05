@@ -1,0 +1,10 @@
+model:
+  base_model: "bert-base-uncased"
+  pretrained_path: "models/pretrained"
+  device: "cpu"  # Для тестов используем CPU
+
+training:
+  max_length: 128
+
+logging:
+  path: "logs/test.log"
