@@ -9,7 +9,8 @@ import pandas as pd
 
 def debug_break(func):
     def wrapper(*args, **kwargs):
-        set_trace()
+        if not os.environ.get('COLAB_GPU'):  # Only debug if not in Colab
+            set_trace()
         return func(*args, **kwargs)
     return wrapper
 
