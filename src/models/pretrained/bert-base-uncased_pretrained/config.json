@@ -1,0 +1,5 @@
+{
+  "hidden_size": 768,
+  "num_labels": 113,
+  "vocab_size": 30522
+}
